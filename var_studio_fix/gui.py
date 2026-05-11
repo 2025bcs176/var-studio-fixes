@@ -311,6 +311,8 @@ class MainWindow(QtWidgets.QMainWindow):
                  lambda v: self._update_denoise(denoise_low_cutoff=v)))
         f.addRow("🔊 Denoise High (Hz)", slider(0.05, 0.5, 0.01, 0.20,
                  lambda v: self._update_denoise(denoise_high_cutoff=v)))
+        f.addRow("🔊 Noise Gate", slider(0, 1, 0.05, 0,
+                 lambda v: STORE.update(noise_gate=v)))
 
         row = QtWidgets.QHBoxLayout()
         b_auto = QtWidgets.QPushButton("✨ Auto-calibrate pitch")
@@ -585,7 +587,8 @@ class MainWindow(QtWidgets.QMainWindow):
                                     denoise_cutoff=STORE.settings.denoise_cutoff,
                                     denoise_low_cutoff=STORE.settings.denoise_low_cutoff,
                                     denoise_high_cutoff=STORE.settings.denoise_high_cutoff,
-                                    harmonics_k=STORE.settings.harmonics_k)
+                                    harmonics_k=STORE.settings.harmonics_k,
+                                    noise_gate=STORE.settings.noise_gate)
                 self.audio_triplet.update_triplet(trip_a)
 
         # Hawk-Eye view (every other tick)
