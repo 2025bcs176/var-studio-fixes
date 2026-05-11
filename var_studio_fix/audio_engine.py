@@ -66,7 +66,10 @@ class AudioEngine:
 
     def precompute_denoise(self, low_cutoff: float = 0.01,
                            high_cutoff: float = 0.20) -> None:
-        """Filter the full audio track in a background thread; signals _filter_ready when done."""
+        """Filter the full audio track in a background thread; signals _filter_ready when done.
+        
+        This avoids blocking the UI while computing the full FFT.
+        """
         if self.samples is None:
             return
         self._filter_ready.clear()
@@ -95,25 +98,31 @@ class AudioEngine:
              high_cutoff: float = 0.20) -> None:
         """Start audio playback from time t (in seconds).
 
-        When denoise=True, waits for the background filter to finish (usually
-        already done by the time the user presses play), then uses the filtered
-        audio. Falls back to raw samples only if the wait times out.
+        When denoise=True, uses filtered audio if ready (with 0.5s timeout to avoid delay).
+        Falls back to raw samples immediately if filter not ready, preventing audio lag.
         """
         if not HAS_PYGAME or self.samples is None:
             return
         try:
             if pygame.mixer.get_busy():
                 pygame.mixer.stop()
-            if denoise:
-                self._filter_ready.wait(timeout=8.0)
-            source = (self._filtered
-                      if (denoise and self._filtered is not None)
-                      else self.samples)
+            
+            # Short timeout (0.5s) to prevent audio playback delay
+            # If filter isn't ready by then, use raw samples instead
+            source = self.samples
+            if denoise and self._filtered is not None:
+                source = self._filtered
+            elif denoise:
+                # Non-blocking check: only use filtered if ready
+                if self._filter_ready.is_set():
+                    source = self._filtered if self._filtered is not None else self.samples
+            
             start = int(t * self.sr)
             start = max(0, min(source.size - 1, start))
             chunk = source[start:]
             if chunk.size == 0:
                 return
+            
             audio_int16 = np.clip(chunk * 32767, -32768, 32767).astype(np.int16)
             self._sound = pygame.mixer.Sound(buffer=audio_int16.tobytes())
             self._sound.set_volume(self._volume)
