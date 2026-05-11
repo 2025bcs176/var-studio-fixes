@@ -27,6 +27,64 @@ def fft2_spectra(gray: np.ndarray, size: int = 128) -> tuple[np.ndarray, np.ndar
 
 
 # ---------------------------------------------------------------------------
+# Spectral Gating (noise floor suppression)
+# ---------------------------------------------------------------------------
+def estimate_noise_floor(signal: np.ndarray, percentile: int = 25) -> np.ndarray:
+    """Estimate noise floor by computing FFT magnitude and taking a low percentile.
+    
+    Returns per-frequency-bin noise floor estimate.
+    """
+    x = signal.astype(np.float32) - signal.mean()
+    F = np.fft.rfft(x)
+    mag = np.abs(F)
+    
+    # Smooth magnitude spectrum to get noise floor estimate
+    # Use low percentile across short windows to avoid speech
+    win_size = max(1, len(mag) // 20)
+    noise_floor = np.zeros_like(mag)
+    for i in range(len(mag)):
+        start = max(0, i - win_size // 2)
+        end = min(len(mag), i + win_size // 2 + 1)
+        noise_floor[i] = np.percentile(mag[start:end], percentile)
+    
+    return noise_floor
+
+
+def spectral_gate(signal: np.ndarray, noise_floor: np.ndarray,
+                  gate_threshold: float = 3.0) -> np.ndarray:
+    """Apply spectral gating: suppress bins below (noise_floor * gate_threshold).
+    
+    Args:
+        signal: Input audio signal
+        noise_floor: Pre-computed noise floor per frequency bin
+        gate_threshold: dB-like multiplier above noise floor (higher = more suppression)
+    
+    Returns:
+        Gated signal (frequency domain applied, then IFFT)
+    """
+    if gate_threshold <= 0:
+        return signal
+    
+    x = signal.astype(np.float32) - signal.mean()
+    F = np.fft.rfft(x)
+    mag = np.abs(F)
+    phase = np.angle(F)
+    
+    # Create gate mask: suppress bins below threshold
+    gate_threshold_db = 10 ** (gate_threshold / 20.0)  # convert to linear
+    threshold_mag = noise_floor * gate_threshold_db
+    mask = np.maximum(mag / (threshold_mag + 1e-10), 0.0)
+    mask = np.minimum(mask, 1.0)  # Clamp to [0, 1]
+    
+    # Apply smooth masking (reduce discontinuities)
+    mask = np.minimum(mask, 1.0)  # Ensure [0, 1]
+    F_gated = mask * mag * np.exp(1j * phase)
+    
+    gated = np.fft.irfft(F_gated, n=len(signal))
+    return gated.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
 # 1D — signal triplet (original / denoised / clear)
 # ---------------------------------------------------------------------------
 @dataclass
@@ -44,15 +102,17 @@ class SignalTriplet:
 def analyze_1d(signal: np.ndarray, *, denoise_cutoff: float = 0.10,
                denoise_low_cutoff: float = 0.01,
                denoise_high_cutoff: float = 0.20,
-               harmonics_k: int = 16) -> SignalTriplet:
+               harmonics_k: int = 16,
+               noise_gate: float = 0.0) -> SignalTriplet:
     """Compute the three signals (original / denoised / clear) and their
     magnitude spectra, all on the same length so they can be plotted in
     separate axes without overlap.
     
     For audio denoising, use denoise_low_cutoff and denoise_high_cutoff
     to create a band-pass filter (e.g., isolate commenter voice 500-4400 Hz).
-    For backward compatibility, if denoise_cutoff > 0 and high_cutoff is default,
-    use the old behavior.
+    
+    For noise gating, use noise_gate (0 = off, 1 = max suppression).
+    Higher values suppress more energy below the noise floor.
     """
     x = signal.astype(np.float32)
     x = x - x.mean()
@@ -71,6 +131,23 @@ def analyze_1d(signal: np.ndarray, *, denoise_cutoff: float = 0.10,
     F_dn = F.copy()
     F_dn[:low_bin] = 0           # remove very low frequencies (crowd rumble)
     F_dn[high_bin:] = 0          # remove high frequencies
+    
+    # Apply spectral gating if enabled (0 = off, 1 = max suppression)
+    if noise_gate > 0:
+        # Estimate noise floor from denoised signal
+        noise_floor = estimate_noise_floor(np.fft.irfft(F_dn, n=n))
+        # Scale gate threshold: 0→0 dB (no gating), 1→12 dB (strong gating)
+        gate_db = noise_gate * 12.0
+        gate_threshold = 10 ** (gate_db / 20.0)
+        mag_dn = np.abs(F_dn)
+        phase_dn = np.angle(F_dn)
+        
+        # Suppress bins below noise_floor * gate_threshold
+        threshold_mag = noise_floor * gate_threshold
+        mask = np.maximum(mag_dn / (threshold_mag + 1e-10), 0.0)
+        mask = np.minimum(mask, 1.0)
+        F_dn = mask * mag_dn * np.exp(1j * phase_dn)
+    
     denoised = np.fft.irfft(F_dn, n=n)
 
     # "Clear": keep top-K largest magnitude bins (excluding DC)
