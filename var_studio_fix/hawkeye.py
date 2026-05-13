@@ -12,8 +12,10 @@ import cv2
 import numpy as np
 
 from .homography import apply_h
-from .offside import PITCH_W, PITCH_H
 
+# Standard pitch dimensions in meters
+PITCH_W = 105.0
+PITCH_H = 68.0
 
 # Cached static pitch background (grass + lines). Drawn once per size.
 _PITCH_CACHE: dict[tuple[int, int], np.ndarray] = {}
