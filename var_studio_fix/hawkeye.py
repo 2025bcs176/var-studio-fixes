@@ -17,12 +17,12 @@ from .homography import apply_h
 PITCH_W = 105.0
 PITCH_H = 68.0
 
-# Cached static pitch background (grass + lines). Drawn once per size.
+# Cached static pitch background (lines only). Drawn once per size.
 _PITCH_CACHE: dict[tuple[int, int], np.ndarray] = {}
 
 
 def _draw_pitch(w: int, h: int) -> np.ndarray:
-    # Clean solid professional green background (no striped shading)
+    # Clean solid professional green background (no distracting stripes)
     img = np.full((h, w, 3), (38, 110, 52), dtype=np.uint8)
 
     pad = int(min(w, h) * 0.04)
@@ -93,7 +93,7 @@ def render_hawkeye(view_w: int, view_h: int, H: Optional[np.ndarray],
         m = apply_h(H, p)
         return float(m[0]), float(m[1])
 
-    # offside lines (vertical in pitch space)
+    # Draw pure offside lines (no shading)
     if attacker is not None:
         ax, _ = proj(attacker)
         cv2.line(img, to_view(ax, 0), to_view(ax, PITCH_H),
@@ -103,15 +103,13 @@ def render_hawkeye(view_w: int, view_h: int, H: Optional[np.ndarray],
         cv2.line(img, to_view(dx, 0), to_view(dx, PITCH_H),
                  (255, 80, 80), 2, cv2.LINE_AA)
 
-    # players
+    # Players as crisp hollow markers instead of filled colored dots
     if attacker is not None:
         ax, ay = proj(attacker)
-        cv2.circle(img, to_view(ax, ay), 7, (0, 220, 255), -1, cv2.LINE_AA)
-        cv2.circle(img, to_view(ax, ay), 8, (20, 20, 20), 1, cv2.LINE_AA)
+        cv2.drawMarker(img, to_view(ax, ay), (0, 220, 255), cv2.MARKER_CROSS, 10, 2)
     if defender is not None:
         dx, dy = proj(defender)
-        cv2.circle(img, to_view(dx, dy), 7, (255, 80, 80), -1, cv2.LINE_AA)
-        cv2.circle(img, to_view(dx, dy), 8, (20, 20, 20), 1, cv2.LINE_AA)
+        cv2.drawMarker(img, to_view(dx, dy), (255, 80, 80), cv2.MARKER_CROSS, 10, 2)
 
     # trail (ball / motion)
     if trail:
