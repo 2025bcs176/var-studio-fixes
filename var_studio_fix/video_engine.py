@@ -1,7 +1,6 @@
-"""Threaded video decoder with frame cache + audio extraction.
+"""Threaded video decoder with frame cache.
 
 Uses OpenCV for video frames (works for local files and HTTP MP4 URLs).
-Audio is extracted lazily via imageio-ffmpeg for the spectrum panel.
 """
 from __future__ import annotations
 
@@ -42,7 +41,7 @@ class VideoEngine:
         self.cache = LRU(128)
         self._lock = threading.Lock()
         self._path: str = ""
-        self._last_idx: int = -10  # for sequential-read fast path
+        self._last_idx: int = -10
 
     @property
     def loaded(self) -> bool:
@@ -75,7 +74,6 @@ class VideoEngine:
         if cached is not None:
             return cached
         with self._lock:
-            # Avoid expensive seek when stepping forward sequentially
             if idx != self._last_idx + 1:
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             ok, frame = self.cap.read()
