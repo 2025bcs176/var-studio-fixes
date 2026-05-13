@@ -1,125 +1,124 @@
-"""Offside line drawing + verdict.
-
-Two modes are supported:
-  1. Calibrated mode  — uses homography H to draw a true perpendicular-to-goal
-     line through the defender (and optionally the attacker), and computes
-     the verdict from pitch-space coordinates.
-  2. Manual line mode — the user draws a single straight line on the screen
-     (two clicks). The attacker's position relative to that line + a chosen
-     goal side determines the verdict. No calibration required.
-"""
+"""Offside determination and rendering module."""
 from __future__ import annotations
 
 import cv2
 import numpy as np
 
-from .homography import apply_h, invert
+# Standard pitch coordinates (in meters) for homography calibration
+# Top-left, Top-right, Bottom-right, Bottom-left
+PITCH_DST = [
+    (0.0, 0.0),
+    (105.0, 0.0),
+    (105.0, 68.0),
+    (0.0, 68.0)
+]
 
+# Standard pitch width in meters (matches the Y-coordinates above)
+PITCH_WIDTH_Y = 68.0
 
-PITCH_W = 105.0
-PITCH_H = 68.0
-PITCH_DST = [(0.0, 0.0), (PITCH_W, 0.0), (PITCH_W, PITCH_H), (0.0, PITCH_H)]
-
-
-def _clip_line_to_frame(line: tuple[tuple[float, float], tuple[float, float]],
-                        frame_h: int, frame_w: int,
-                        margin: int = 20) -> tuple[tuple[float, float], tuple[float, float]]:
-    """Clip line endpoints to stay within frame + margin, preventing spectator areas.
+def get_pitch_bounded_line(H: np.ndarray, pitch_x: float) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Returns image coordinates for a line across the pitch at a specific pitch X."""
+    H_inv = np.linalg.inv(H)
     
-    Keeps line within a reasonable field region by constraining to:
-    - Horizontal: [margin, frame_w - margin]
-    - Vertical: [margin, frame_h - margin]
+    # Define endpoints at the top touchline (Y=0) and bottom touchline (Y=68)
+    pts_pitch = np.array([[[pitch_x, 0.0], [pitch_x, PITCH_WIDTH_Y]]], dtype=np.float32)
+    pts_img = cv2.perspectiveTransform(pts_pitch, H_inv)[0]
+    
+    # Return safely mapped integer coordinates for drawing
+    return tuple(map(int, pts_img[0])), tuple(map(int, pts_img[1]))
+
+def snap_to_defender_edge(frame: np.ndarray, click_pt: tuple[float, float], goal_side: str) -> tuple[float, float]:
     """
-    (x1, y1), (x2, y2) = line
-    
-    # Clamp to frame boundaries with margin
-    x1 = max(margin, min(frame_w - margin - 1, x1))
-    y1 = max(margin, min(frame_h - margin - 1, y1))
-    x2 = max(margin, min(frame_w - margin - 1, x2))
-    y2 = max(margin, min(frame_h - margin - 1, y2))
-    
-    return ((x1, y1), (x2, y2))
-
-
-def perpendicular_line_through(H: np.ndarray, screen_pt: tuple[float, float]
-                               ) -> tuple[tuple[int, int], tuple[int, int]]:
-    px = apply_h(H, screen_pt)
-    Hinv = invert(H)
-    a = apply_h(Hinv, (px[0], 0.0))
-    b = apply_h(Hinv, (px[0], PITCH_H))
-    return (int(a[0]), int(a[1])), (int(b[0]), int(b[1]))
-
-
-def _side_of_line(line: tuple[tuple[float, float], tuple[float, float]],
-                  pt: tuple[float, float]) -> float:
-    (x1, y1), (x2, y2) = line
-    return (x2 - x1) * (pt[1] - y1) - (y2 - y1) * (pt[0] - x1)
-
-
-def draw_offside(img: np.ndarray,
-                 H: np.ndarray | None,
-                 attacker: tuple[float, float] | None,
-                 defender: tuple[float, float] | None,
-                 manual_line: tuple[tuple[float, float],
-                                    tuple[float, float]] | None = None,
-                 goal_side: str = "right") -> str | None:
-    """Draw markers / lines and return verdict string ('ONSIDE'/'OFFSIDE') or None.
-    
-    For manual lines: clips line to stay within frame to avoid drawing into spectator areas.
+    AI/CV helper: Snaps the user's click to the defender's rearmost pixel.
+    Uses a local bounding box and edge detection to find the player's silhouette.
     """
-    verdict: str | None = None
-    frame_h, frame_w = img.shape[:2]
+    cx, cy = int(click_pt[0]), int(click_pt[1])
+    h, w = frame.shape[:2]
 
-    # --- markers ---------------------------------------------------------
-    if attacker is not None:
-        cv2.circle(img, (int(attacker[0]), int(attacker[1])), 7,
-                   (0, 220, 255), -1, cv2.LINE_AA)
-        cv2.putText(img, "A", (int(attacker[0]) + 9, int(attacker[1]) - 9),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 255), 2, cv2.LINE_AA)
-    if defender is not None:
-        cv2.circle(img, (int(defender[0]), int(defender[1])), 7,
-                   (255, 90, 90), -1, cv2.LINE_AA)
-        cv2.putText(img, "D", (int(defender[0]) + 9, int(defender[1]) - 9),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 90, 90), 2, cv2.LINE_AA)
+    # Define a 60x60 Region of Interest (ROI) around the click
+    box_size = 60
+    x1, y1 = max(0, cx - box_size // 2), max(0, cy - box_size // 2)
+    x2, y2 = min(w, cx + box_size // 2), min(h, cy + box_size // 2)
 
-    # --- offside line + verdict -----------------------------------------
-    line_screen: tuple[tuple[float, float], tuple[float, float]] | None = None
+    roi = frame[y1:y2, x1:x2]
+    if roi.size == 0:
+        return click_pt
 
-    if manual_line is not None:
-        # Clip manual line to frame to prevent drawing into spectator areas
-        line_screen = _clip_line_to_frame(manual_line, frame_h, frame_w, margin=30)
-        cv2.line(img,
-                 (int(line_screen[0][0]), int(line_screen[0][1])),
-                 (int(line_screen[1][0]), int(line_screen[1][1])),
-                 (255, 80, 80), 2, cv2.LINE_AA)
-    elif H is not None and defender is not None:
-        d1, d2 = perpendicular_line_through(H, defender)
-        line_screen = ((float(d1[0]), float(d1[1])),
-                       (float(d2[0]), float(d2[1])))
-        cv2.line(img, d1, d2, (255, 80, 80), 2, cv2.LINE_AA)
-        if attacker is not None:
-            a1, a2 = perpendicular_line_through(H, attacker)
-            cv2.line(img, a1, a2, (0, 220, 255), 1, cv2.LINE_AA)
+    # Simple AI proxy: Grayscale and Canny edge detection to find the player silhouette
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
 
-    if line_screen is not None and attacker is not None:
-        if H is not None and manual_line is None:
-            ax = apply_h(H, attacker)[0]
-            dx = apply_h(H, defender)[0] if defender is not None else ax
-            attacker_ahead = ax > dx if goal_side == "right" else ax < dx
+    # Find the coordinates of all edge pixels within our box
+    y_coords, x_coords = np.where(edges > 0)
+    if len(x_coords) == 0:
+        return click_pt
+
+    # Determine the rearmost pixel based on the direction of play
+    if goal_side == "left":
+        # Defending left goal -> find the furthest left pixel
+        idx = np.argmin(x_coords)
+    else:
+        # Defending right goal -> find the furthest right pixel
+        idx = np.argmax(x_coords)
+
+    # Translate local ROI coordinates back to the global frame
+    snapped_x = x1 + x_coords[idx]
+    snapped_y = y1 + y_coords[idx]
+
+    return float(snapped_x), float(snapped_y)
+
+def draw_offside(
+    frame: np.ndarray,
+    H: np.ndarray | None,
+    attacker: tuple[float, float] | None = None,
+    defender: tuple[float, float] | None = None,
+    manual_line: tuple[tuple[float, float], tuple[float, float]] | None = None,
+    goal_side: str = "right"
+) -> str | None:
+    """Draws offside lines and returns the verdict."""
+    verdict = None
+
+    # 1. Draw Manual Line (if any)
+    if manual_line:
+        cv2.line(frame,
+                 (int(manual_line[0][0]), int(manual_line[0][1])),
+                 (int(manual_line[1][0]), int(manual_line[1][1])),
+                 (255, 255, 0), 2, cv2.LINE_AA)
+
+    # If the pitch hasn't been calibrated yet, we can't project perspective lines
+    if H is None:
+        return verdict
+
+    # 2. Helper to project points into 2D Pitch Space
+    def to_pitch(pt):
+        p = np.array([[[pt[0], pt[1]]]], dtype=np.float32)
+        return cv2.perspectiveTransform(p, H)[0][0]
+
+    pitch_att_x = None
+    pitch_def_x = None
+
+    if attacker:
+        pitch_att_x = to_pitch(attacker)[0]
+        # Draw attacker marker
+        cv2.circle(frame, (int(attacker[0]), int(attacker[1])), 5, (0, 165, 255), -1)
+
+    if defender:
+        # AI SNAP: Adjust the rough click to the rearmost edge of the player
+        ai_defender = snap_to_defender_edge(frame, defender, goal_side)
+        pitch_def_x = to_pitch(ai_defender)[0]
+
+        # Calculate a line perfectly bounded by the touchlines, parallel to the goal line
+        pt1, pt2 = get_pitch_bounded_line(H, pitch_def_x)
+
+        # Draw the AI-snapped line and point
+        cv2.line(frame, pt1, pt2, (255, 50, 50), 2, cv2.LINE_AA)
+        cv2.circle(frame, (int(ai_defender[0]), int(ai_defender[1])), 5, (255, 50, 50), -1)
+
+    # 3. Determine Verdict based on X-axis overlap in Pitch Space
+    if pitch_att_x is not None and pitch_def_x is not None:
+        if goal_side == "right":
+            verdict = "OFFSIDE" if pitch_att_x > pitch_def_x else "ON-SIDE"
         else:
-            # use drawn line + reference point (defender or right edge)
-            side_attacker = _side_of_line(line_screen, attacker)
-            ref_pt = defender if defender is not None else (
-                (img.shape[1] - 1.0, img.shape[0] / 2.0)
-                if goal_side == "right"
-                else (0.0, img.shape[0] / 2.0))
-            side_goal = _side_of_line(line_screen, ref_pt)
-            attacker_ahead = (side_attacker * side_goal) > 0 and \
-                             abs(side_attacker) > 1e-3
-        verdict = "OFFSIDE" if attacker_ahead else "ONSIDE"
-        color = (0, 0, 255) if verdict == "OFFSIDE" else (0, 200, 0)
-        cv2.rectangle(img, (10, 14), (260, 60), (0, 0, 0), -1)
-        cv2.putText(img, verdict, (20, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, color, 3, cv2.LINE_AA)
+            verdict = "OFFSIDE" if pitch_att_x < pitch_def_x else "ON-SIDE"
 
     return verdict
