@@ -6,15 +6,12 @@ Layout:
   ├───────────────────────────────┬──────────────────────────────┤
   │                               │  Tools (sliders)             │
   │       Video stage             │  ─ sharpen / blur / B / C    │
-  │       (with overlay)          │  ─ zoom / harmonics / cutoff │
+  │       (with overlay)          │  ─ zoom / cutoff             │
   │                               │  ─ Auto-calibrate · offside  │
   │                               ├──────────────────────────────┤
   │                               │  2D FFT  | Magnitude | Phase │
   ├───────────────────────────────┴──────────────────────────────┤
   │ Transport: ▶ ⏸  ◀◀  ▶▶   speed   timeline                    │
-  ├──────────────────────────────────────────────────────────────┤
-  │ Video Fourier  : Original | Denoised | Clear  (3 separate)   │
-  │ Audio Fourier  : Original | Denoised | Clear  (3 separate)   │
   └──────────────────────────────────────────────────────────────┘
 """
 from __future__ import annotations
@@ -29,25 +26,20 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
 from .video_engine import VideoEngine
-from .audio_engine import AudioEngine
 from .processing import apply_pipeline, to_luminance
-from .fft_tools import fft2_spectra, analyze_1d
+from .fft_tools import fft2_spectra
 from .auto_calibrate import detect_pitch_corners
 from .homography import homography
 from .offside import draw_offside, PITCH_DST
 from .hawkeye import render_hawkeye
 from .store import STORE
 
-
 pg.setConfigOptions(antialias=True, background="#0c0f12", foreground="#d6e2ee")
 
-
-# ---------------------------------------------------------------------------
 def ndarray_to_qimage(bgr: np.ndarray) -> QtGui.QImage:
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     h, w, _ = rgb.shape
     return QtGui.QImage(rgb.data, w, h, 3 * w, QtGui.QImage.Format_RGB888).copy()
-
 
 class VideoStage(QtWidgets.QLabel):
     """Click-to-pick widget for calibration / attacker / defender selection."""
@@ -84,7 +76,6 @@ class VideoStage(QtWidgets.QLabel):
         self.setPixmap(pm)
 
     def _to_image_coords(self, ev) -> tuple[float, float]:
-        # Pixmap is centered with KeepAspectRatio
         ox = (self.width() - self._draw_w) / 2
         oy = (self.height() - self._draw_h) / 2
         x = (ev.x() - ox) / max(1, self._draw_w) * self._img_w
@@ -98,52 +89,6 @@ class VideoStage(QtWidgets.QLabel):
         if not (0 <= x <= self._img_w and 0 <= y <= self._img_h):
             return
         self.pickMode.emit(self._mode, x, y)
-
-
-class TripletGraph(QtWidgets.QWidget):
-    """3 separate plots side by side: Original / Denoised / Clear.
-    Each plot stacks the time signal on top and its magnitude spectrum
-    underneath, so nothing overlaps.
-    """
-
-    def __init__(self, title: str):
-        super().__init__()
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lbl = QtWidgets.QLabel(f"<b>{title}</b>")
-        lbl.setStyleSheet("color:#cfe;")
-        lay.addWidget(lbl)
-
-        row = QtWidgets.QHBoxLayout()
-        lay.addLayout(row, 1)
-
-        self.plots = {}
-        colors = {"Original": "#9aa4b2", "Denoised": "#5ee0c4", "Clear": "#ffd66b"}
-        for name in ("Original", "Denoised", "Clear"):
-            box = QtWidgets.QVBoxLayout()
-            top = pg.PlotWidget(title=f"{name} — signal")
-            bot = pg.PlotWidget(title=f"{name} — |FFT|")
-            for pw in (top, bot):
-                pw.showGrid(x=True, y=True, alpha=0.2)
-                pw.setMouseEnabled(False, False)
-            curve_t = top.plot(pen=pg.mkPen(colors[name], width=2))
-            curve_f = bot.plot(pen=pg.mkPen(colors[name], width=1))
-            box.addWidget(top)
-            box.addWidget(bot)
-            w = QtWidgets.QWidget()
-            w.setLayout(box)
-            row.addWidget(w)
-            self.plots[name] = (curve_t, curve_f, top, bot)
-
-    def update_triplet(self, trip):
-        pairs = (("Original", trip.original, trip.mag_original),
-                 ("Denoised", trip.denoised, trip.mag_denoised),
-                 ("Clear",    trip.clear,    trip.mag_clear))
-        for name, sig, mag in pairs:
-            ct, cf, *_ = self.plots[name]
-            ct.setData(trip.t, sig)
-            cf.setData(trip.freqs, mag)
-
 
 class SpectrumPanel(QtWidgets.QWidget):
     def __init__(self):
@@ -165,7 +110,6 @@ class SpectrumPanel(QtWidgets.QWidget):
             lbl.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(
                 lbl.size(), QtCore.Qt.KeepAspectRatio,
                 QtCore.Qt.SmoothTransformation))
-
 
 # ---------------------------------------------------------------------------
 class MainWindow(QtWidgets.QMainWindow):
@@ -190,7 +134,6 @@ class MainWindow(QtWidgets.QMainWindow):
         """)
 
         self.video = VideoEngine()
-        self.audio = AudioEngine()
         self.t = 0.0
         self.playing = False
         self.attacker = None
@@ -202,10 +145,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tick_count = 0
         self._trail: list[tuple[float, float]] = []
         self._last_render_size = (0, 0)
-        self._wants_audio_restart = False  # set when filter recomputes while playing
 
         # Central widget
-        # Replace the old Central widget section with this:
         self.scroll_area = QtWidgets.QScrollArea()
         self.setCentralWidget(self.scroll_area)
         self.scroll_area.setWidgetResizable(True)
@@ -237,10 +178,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Transport
         outer.addLayout(self._build_transport())
-
-        # Fourier panel
-        self.audio_triplet = TripletGraph("Audio — Fourier")
-        outer.addWidget(self.audio_triplet, 1)
 
         # Render timer
         self.timer = QtCore.QTimer(self)
@@ -301,18 +238,6 @@ class MainWindow(QtWidgets.QMainWindow):
                  lambda v: STORE.update(pan_y=v)))
         f.addRow("Video Scale", slider(1.0, 4.0, 0.25, 1.0,
                  lambda v: STORE.update(output_scale=v)))
-        f.addRow("Volume", slider(0.0, 1.0, 0.05, 1.0,
-                 lambda v: self._set_volume(v)))
-        f.addRow("Harmonics K", slider(1, 64, 1, 16,
-                 lambda v: STORE.update(harmonics_k=int(v))))
-        f.addRow("Denoise cutoff", slider(0.01, 0.5, 0.01, 0.10,
-                 lambda v: STORE.update(denoise_cutoff=v)))
-        f.addRow("🔊 Denoise Low (Hz)", slider(0.001, 0.1, 0.005, 0.01,
-                 lambda v: self._update_denoise(denoise_low_cutoff=v)))
-        f.addRow("🔊 Denoise High (Hz)", slider(0.05, 0.5, 0.01, 0.20,
-                 lambda v: self._update_denoise(denoise_high_cutoff=v)))
-        f.addRow("🔊 Noise Gate", slider(0, 1, 0.05, 0,
-                 lambda v: STORE.update(noise_gate=v)))
 
         row = QtWidgets.QHBoxLayout()
         b_auto = QtWidgets.QPushButton("✨ Auto-calibrate pitch")
@@ -400,47 +325,23 @@ class MainWindow(QtWidgets.QMainWindow):
     def _load(self, path: str):
         try:
             self.video.open(path)
-            self.audio.load(path)
-            self.audio.precompute_denoise(STORE.settings.denoise_low_cutoff,
-                                          STORE.settings.denoise_high_cutoff)
             self.t = 0.0
             self.playing = False
             self.b_play.setText("▶")
             self.attacker = self.defender = None
             self.H = None
             self.verdict_lbl.setText("—")
-            self.audio.stop()
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Load failed", str(e))
-
-    def _update_denoise(self, **kwargs) -> None:
-        STORE.update(**kwargs)
-        self.audio.precompute_denoise(STORE.settings.denoise_low_cutoff,
-                                      STORE.settings.denoise_high_cutoff)
-        if self.playing:
-            self._wants_audio_restart = True  # tick() restarts once filter is ready
-
-    def _set_volume(self, vol: float) -> None:
-        STORE.update(volume=vol)
-        self.audio.set_volume(vol)
 
     def toggle_play(self):
         self.playing = not self.playing
         self.b_play.setText("⏸" if self.playing else "▶")
-        if self.playing:
-            self.audio.play(self.t,
-                            denoise=True,
-                            low_cutoff=STORE.settings.denoise_low_cutoff,
-                            high_cutoff=STORE.settings.denoise_high_cutoff)
-            self._last_tick = time.time()
-        else:
-            self.audio.stop()
-            self._last_tick = time.time()
+        self._last_tick = time.time()
 
     def step_frame(self, delta: int):
         self.playing = False
         self.b_play.setText("▶")
-        self.audio.stop()
         if self.video.loaded:
             self.t = max(0.0, self.t + delta / self.video.fps)
 
@@ -449,7 +350,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.t = (v / 1000.0) * self.video.duration
             self.playing = False
             self.b_play.setText("▶")
-            self.audio.stop()
 
     def on_pick(self, mode: str, x: float, y: float):
         if mode == "calibrate":
@@ -545,23 +445,10 @@ class MainWindow(QtWidgets.QMainWindow):
         dt = now - self._last_tick
         self._last_tick = now
 
-        # Seamlessly apply new denoise filter once background FFT finishes
-        if self._wants_audio_restart and self.audio._filter_ready.is_set():
-            self._wants_audio_restart = False
-            self.audio.play(self.t,
-                            denoise=True,
-                            low_cutoff=STORE.settings.denoise_low_cutoff,
-                            high_cutoff=STORE.settings.denoise_high_cutoff)
-            self._last_tick = time.time()
-
         if self.playing and self.video.loaded:
             self.t += dt * self.speed_box.currentData()
             if self.t >= self.video.duration:
                 self.t = 0.0
-                self.audio.play(0.0,
-                                denoise=True,
-                                low_cutoff=STORE.settings.denoise_low_cutoff,
-                                high_cutoff=STORE.settings.denoise_high_cutoff)
                 self._last_tick = time.time()
 
         out = self._render_current()
@@ -576,20 +463,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.scrub.setValue(int(self.t / self.video.duration * 1000))
             self.scrub.blockSignals(False)
             self.time_lbl.setText(f"{self.t:5.2f} / {self.video.duration:5.2f} s")
-
-        heavy = (self._tick_count % 3 == 0) or not self.playing
-
-        # Audio triplet (downsampled tick: ~10 Hz while playing)
-        if heavy:
-            win = self.audio.window(self.t, n=2048)
-            if win is not None and win.size:
-                trip_a = analyze_1d(win,
-                                    denoise_cutoff=STORE.settings.denoise_cutoff,
-                                    denoise_low_cutoff=STORE.settings.denoise_low_cutoff,
-                                    denoise_high_cutoff=STORE.settings.denoise_high_cutoff,
-                                    harmonics_k=STORE.settings.harmonics_k,
-                                    noise_gate=STORE.settings.noise_gate)
-                self.audio_triplet.update_triplet(trip_a)
 
         # Hawk-Eye view (every other tick)
         if self._tick_count % 2 == 0:
@@ -610,7 +483,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.hawk_lbl.setPixmap(QtGui.QPixmap.fromImage(qimg).scaled(
                     self.hawk_lbl.size(), QtCore.Qt.KeepAspectRatio,
                     QtCore.Qt.SmoothTransformation))
-
 
 def run():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
