@@ -50,7 +50,8 @@ def detect_pitch_corners(frame_bgr: np.ndarray) -> list[tuple[float, float]] | N
     if len(approx) != 4:
         rect = cv2.minAreaRect(largest_contour)
         box = cv2.boxPoints(rect)
-        approx = np.int0(box)
+        # FIX: Replaced deprecated np.int0 with np.intp to support newer Numpy versions
+        approx = np.intp(box)
     else:
         approx = approx.reshape(4, 2)
 
