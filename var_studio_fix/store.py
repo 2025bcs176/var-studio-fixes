@@ -19,6 +19,8 @@ class Settings:
     show_overlay: bool = True
     fft_roi: int = 256            # power of two
     output_scale: float = 1.0     # output resolution multiplier (1.0 = native, 4.0 = 4×)
+    # Add this inside the Settings dataclass:
+    enhance_details: bool = False
 
 
 class Store:
