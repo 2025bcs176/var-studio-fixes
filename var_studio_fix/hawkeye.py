@@ -12,24 +12,16 @@ import cv2
 import numpy as np
 
 from .homography import apply_h
+from .offside import PITCH_W, PITCH_H
 
-# Standard pitch dimensions in meters
-PITCH_W = 105.0
-PITCH_H = 68.0
 
 # Cached static pitch background (grass + lines). Drawn once per size.
 _PITCH_CACHE: dict[tuple[int, int], np.ndarray] = {}
 
 
 def _draw_pitch(w: int, h: int) -> np.ndarray:
-    img = np.full((h, w, 3), (38, 110, 52), dtype=np.uint8)  # grass green (BGR)
-    # subtle stripes
-    n_stripes = 14
-    for i in range(n_stripes):
-        if i % 2 == 0:
-            x0 = int(i * w / n_stripes)
-            x1 = int((i + 1) * w / n_stripes)
-            img[:, x0:x1] = (32, 100, 46)
+    # Clean solid professional green background (no striped shading)
+    img = np.full((h, w, 3), (38, 110, 52), dtype=np.uint8)
 
     pad = int(min(w, h) * 0.04)
 
@@ -40,26 +32,32 @@ def _draw_pitch(w: int, h: int) -> np.ndarray:
 
     white = (240, 240, 240)
     th = max(1, w // 360)
-    # outer
+    
+    # outer boundary
     cv2.rectangle(img, s(0, 0), s(PITCH_W, PITCH_H), white, th)
-    # halfway
+    # halfway line
     cv2.line(img, s(PITCH_W / 2, 0), s(PITCH_W / 2, PITCH_H), white, th)
+    # center circle
     cv2.circle(img, s(PITCH_W / 2, PITCH_H / 2),
                int(9.15 / PITCH_W * (w - 2 * pad)), white, th)
     cv2.circle(img, s(PITCH_W / 2, PITCH_H / 2), max(2, th + 1), white, -1)
+    
     # penalty boxes (16.5m x 40.3m), 6-yard (5.5m x 18.32m)
     for sign in (0, 1):
         x0 = 0 if sign == 0 else PITCH_W - 16.5
         x1 = 16.5 if sign == 0 else PITCH_W
         cv2.rectangle(img, s(x0, (PITCH_H - 40.3) / 2),
                       s(x1, (PITCH_H + 40.3) / 2), white, th)
+        
         x0b = 0 if sign == 0 else PITCH_W - 5.5
         x1b = 5.5 if sign == 0 else PITCH_W
         cv2.rectangle(img, s(x0b, (PITCH_H - 18.32) / 2),
                       s(x1b, (PITCH_H + 18.32) / 2), white, th)
+        
         # penalty spot 11m
         spot = 11.0 if sign == 0 else PITCH_W - 11.0
         cv2.circle(img, s(spot, PITCH_H / 2), max(2, th + 1), white, -1)
+        
     return img
 
 
@@ -68,11 +66,7 @@ def render_hawkeye(view_w: int, view_h: int, H: Optional[np.ndarray],
                    defender: Optional[tuple[float, float]],
                    trail: Optional[list[tuple[float, float]]] = None
                    ) -> np.ndarray:
-    """Compose the top-down pitch with overlays.
-    H: image-screen -> pitch (metres) homography.
-    attacker/defender: SCREEN-space coords (will be projected via H).
-    trail: optional list of recent screen-space ball positions.
-    """
+    """Compose the top-down pitch with overlays."""
     key = (view_w, view_h)
     base = _PITCH_CACHE.get(key)
     if base is None:
@@ -88,7 +82,7 @@ def render_hawkeye(view_w: int, view_h: int, H: Optional[np.ndarray],
         return x, y
 
     if H is None:
-        cv2.putText(img, "Calibrate pitch to enable Hawk-Eye",
+        cv2.putText(img, "AI Calibrating...",
                     (20, view_h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                     (230, 230, 230), 1, cv2.LINE_AA)
         return img
