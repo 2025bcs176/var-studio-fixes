@@ -12,38 +12,18 @@ PITCH_DST = [
     (0.0, 68.0)
 ]
 
-def get_extended_perspective_line(H: np.ndarray, pitch_x: float) -> tuple[tuple[int, int], tuple[int, int]]:
-    """Returns image coordinates for a line across the pitch at a specific pitch X.
-    Shoots the endpoints far past the boundaries so we can clip it to the grass visually."""
+# The standard width of a football pitch in meters
+PITCH_WIDTH_Y = 68.0
+
+def get_pitch_bounded_line(H: np.ndarray, pitch_x: float) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Mathematically bounds the line strictly between the top (Y=0) and bottom (Y=68) touchlines."""
     H_inv = np.linalg.inv(H)
-    # Extended Y bounds in pitch space (-50 to +150 meters) to ensure it spans the screen
-    pts_pitch = np.array([[[pitch_x, -50.0], [pitch_x, 150.0]]], dtype=np.float32)
-    pts_img = cv2.perspectiveTransform(pts_pitch, H_inv)[0]
-    return tuple(map(int, pts_img[0])), tuple(map(int, pts_img[1]))
-
-def draw_clipped_line_on_pitch(frame: np.ndarray, pt1: tuple[int, int], pt2: tuple[int, int], color: tuple[int, int, int], thickness: int):
-    """Draws a perspective line but strictly clips it to the green grass area.
-    This prevents the offside line from bleeding 'into' the stands or crowd, 
-    and gives it a professional AR look (hiding behind players)."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    # Isolate the green grass (Semantic Mask)
-    grass_mask = cv2.inRange(hsv, (25, 30, 30), (85, 255, 255))
     
-    # Clean up the mask to bridge shadows and pitch patterns
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    grass_mask = cv2.morphologyEx(grass_mask, cv2.MORPH_CLOSE, kernel)
-    grass_mask = cv2.morphologyEx(grass_mask, cv2.MORPH_OPEN, kernel)
-
-    # Draw the infinite perspective line on a blank canvas
-    line_layer = np.zeros_like(frame)
-    cv2.line(line_layer, pt1, pt2, color, thickness, cv2.LINE_AA)
-
-    # Clip the line using the grass mask
-    clipped_line = cv2.bitwise_and(line_layer, line_layer, mask=grass_mask)
-
-    # Overlay only the visible clipped line pixels back onto the main frame
-    line_mask = cv2.cvtColor(clipped_line, cv2.COLOR_BGR2GRAY) > 0
-    frame[line_mask] = clipped_line[line_mask]
+    # We restrict the line entirely to the 0m -> 68m width of the calibrated pitch
+    pts_pitch = np.array([[[pitch_x, 0.0], [pitch_x, PITCH_WIDTH_Y]]], dtype=np.float32)
+    pts_img = cv2.perspectiveTransform(pts_pitch, H_inv)[0]
+    
+    return tuple(map(int, pts_img[0])), tuple(map(int, pts_img[1]))
 
 def snap_to_defender_edge(frame: np.ndarray, click_pt: tuple[float, float], goal_side: str) -> tuple[float, float]:
     """AI/CV helper: Snaps the user's click to the defender's rearmost pixel."""
@@ -87,13 +67,10 @@ def draw_offside(
     verdict = None
 
     if manual_line:
-        # Clip the manual line to the grass as well!
-        draw_clipped_line_on_pitch(
-            frame,
-            (int(manual_line[0][0]), int(manual_line[0][1])),
-            (int(manual_line[1][0]), int(manual_line[1][1])),
-            (255, 255, 0), 2
-        )
+        cv2.line(frame,
+                 (int(manual_line[0][0]), int(manual_line[0][1])),
+                 (int(manual_line[1][0]), int(manual_line[1][1])),
+                 (255, 255, 0), 2, cv2.LINE_AA)
 
     if H is None:
         return verdict
@@ -113,12 +90,11 @@ def draw_offside(
         ai_defender = snap_to_defender_edge(frame, defender, goal_side)
         pitch_def_x = to_pitch(ai_defender)[0]
 
-        # Get the perspective-accurate line coordinates
-        pt1, pt2 = get_extended_perspective_line(H, pitch_def_x)
+        # 1. Get the STRICTLY bounded line coordinates based on Homography math
+        pt1, pt2 = get_pitch_bounded_line(H, pitch_def_x)
 
-        # Draw it cleanly masked to the pitch so it doesn't bleed into stands/players
-        draw_clipped_line_on_pitch(frame, pt1, pt2, (255, 50, 50), 2)
-        
+        # 2. Draw it natively. It will stop exactly where the calibrated pitch stops.
+        cv2.line(frame, pt1, pt2, (255, 50, 50), 2, cv2.LINE_AA)
         cv2.drawMarker(frame, (int(ai_defender[0]), int(ai_defender[1])), (255, 50, 50), cv2.MARKER_CROSS, 10, 2)
 
     if pitch_att_x is not None and pitch_def_x is not None:
