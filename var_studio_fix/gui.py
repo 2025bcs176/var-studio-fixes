@@ -222,6 +222,13 @@ class MainWindow(QtWidgets.QMainWindow):
             s.valueChanged.connect(lambda v: cb(v * step))
             return s
 
+
+        # Create a toggle button for the new Enhancement filter
+        b_enhance = QtWidgets.QPushButton("✨ Enhance Picture Quality")
+        b_enhance.setCheckable(True)
+        b_enhance.toggled.connect(lambda v: STORE.update(enhance_details=v))
+        f.addRow(b_enhance)
+
         f.addRow("Sharpen", slider(0, 2, 0.05, 0,
                  lambda v: STORE.update(sharpen=v)))
         f.addRow("Blur (σ)", slider(0, 10, 0.1, 0,
