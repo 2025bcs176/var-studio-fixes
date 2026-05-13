@@ -18,13 +18,7 @@ class Settings:
     show_offside: bool = True
     show_overlay: bool = True
     fft_roi: int = 256            # power of two
-    harmonics_k: int = 16         # for "clear" reconstruction
-    denoise_cutoff: float = 0.10  # normalised freq cutoff (0..0.5) — deprecated, use low/high
-    denoise_low_cutoff: float = 0.01   # min freq to keep (normalized, ~500 Hz at 22050 Hz)
-    denoise_high_cutoff: float = 0.20  # max freq to keep (normalized, ~4400 Hz at 22050 Hz)
-    noise_gate: float = 0.0            # spectral gating (0 = off, 1 = max suppression, 0-12 dB)
-    output_scale: float = 1.0          # output resolution multiplier (1.0 = native, 4.0 = 4×)
-    volume: float = 1.0               # playback volume (0.0 – 1.0)
+    output_scale: float = 1.0     # output resolution multiplier (1.0 = native, 4.0 = 4×)
 
 
 class Store:
